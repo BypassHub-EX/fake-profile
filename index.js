@@ -13,6 +13,7 @@
   storage.selectedExtras ??= {};
   storage.hiddenFlags ??= {};
   storage.hiddenExtras ??= {};
+  storage.replaceMode ??= true;
 
   // No Staff (1), no Partner (2)
   const FLAG_BADGES = [
@@ -81,14 +82,14 @@
   }
 
   function withBadges(value) {
-    const original = Number(value || 0);
-    return (original & ~hiddenFlagMask()) | selectedFlagMask();
+    const original = storage.replaceMode ? 0 : (Number(value || 0) & ~hiddenFlagMask());
+    return original | selectedFlagMask();
   }
 
   function extraBadgeObjects(existing) {
     const hidden = storage.hiddenExtras || {};
     const selected = storage.selectedExtras || {};
-    const out = Array.isArray(existing)
+    const out = storage.replaceMode ? [] : (Array.isArray(existing)
       ? existing.filter(b => {
           const badgeId = String(b?.id || b?.key || "").toLowerCase();
           const badgeDesc = String(b?.description || b?.label || "").toLowerCase();
@@ -101,7 +102,7 @@
 
           return true;
         })
-      : [];
+      : []);
 
     for (const [id, description, icon] of EXTRA_BADGES) {
       if (selected[id] && !out.some(x => x?.id === id)) {
@@ -266,6 +267,7 @@
 
     return React.createElement(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16 } },
       React.createElement(Toggle, { label: "Enabled", sub: "Local-only changes", value: !!storage.enabled, onPress: () => { set("enabled", !storage.enabled); refreshDiscord(); } }),
+      React.createElement(Toggle, { label: "Replace Mode / Hide Owned", sub: "ON = hides all real owned badges and only shows selected badges", value: !!storage.replaceMode, onPress: () => { set("replaceMode", !storage.replaceMode); refreshDiscord(); } }),
       React.createElement(Toggle, { label: "Nitro / Boost Dates", sub: "72-month Nitro + 24-month boost", value: !!storage.nitroEnabled, onPress: () => { set("nitroEnabled", !storage.nitroEnabled); refreshDiscord(); } }),
       React.createElement(Field, { label: "Display name", keyName: "displayName", placeholder: "Badge Collector" }),
       React.createElement(Field, { label: "Username", keyName: "username", placeholder: "badgecollector" }),
