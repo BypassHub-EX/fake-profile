@@ -11,6 +11,8 @@
   storage.nitroEnabled ??= true;
   storage.selectedFlags ??= {};
   storage.selectedExtras ??= {};
+  storage.hiddenFlags ??= {};
+  storage.hiddenExtras ??= {};
 
   // No Staff (1), no Partner (2)
   const FLAG_BADGES = [
@@ -71,16 +73,42 @@
     return mask;
   }
 
+  function hiddenFlagMask() {
+    let mask = 0;
+    const hidden = storage.hiddenFlags || {};
+    for (const [id, _label, flag] of FLAG_BADGES) if (hidden[id]) mask |= flag;
+    return mask;
+  }
+
   function withBadges(value) {
-    return Number(value || 0) | selectedFlagMask();
+    const original = Number(value || 0);
+    return (original & ~hiddenFlagMask()) | selectedFlagMask();
   }
 
   function extraBadgeObjects(existing) {
-    const out = Array.isArray(existing) ? existing.slice() : [];
+    const hidden = storage.hiddenExtras || {};
     const selected = storage.selectedExtras || {};
+    const out = Array.isArray(existing)
+      ? existing.filter(b => {
+          const badgeId = String(b?.id || b?.key || "").toLowerCase();
+          const badgeDesc = String(b?.description || b?.label || "").toLowerCase();
+
+          for (const hideId of Object.keys(hidden)) {
+            if (!hidden[hideId]) continue;
+            const h = hideId.toLowerCase();
+            if (badgeId.includes(h) || badgeDesc.includes(h)) return false;
+          }
+
+          return true;
+        })
+      : [];
+
     for (const [id, description, icon] of EXTRA_BADGES) {
-      if (selected[id] && !out.some(x => x?.id === id)) out.push({ id, description, icon, iconSrc: icon });
+      if (selected[id] && !out.some(x => x?.id === id)) {
+        out.push({ id, description, icon, iconSrc: icon });
+      }
     }
+
     return out;
   }
 
@@ -224,6 +252,18 @@
       refreshDiscord();
     };
 
+    const toggleHiddenFlag = id => {
+      storage.hiddenFlags = { ...(storage.hiddenFlags || {}), [id]: !storage.hiddenFlags?.[id] };
+      forceUpdate();
+      refreshDiscord();
+    };
+
+    const toggleHiddenExtra = id => {
+      storage.hiddenExtras = { ...(storage.hiddenExtras || {}), [id]: !storage.hiddenExtras?.[id] };
+      forceUpdate();
+      refreshDiscord();
+    };
+
     return React.createElement(RN.ScrollView, { style: { flex: 1 }, contentContainerStyle: { padding: 16 } },
       React.createElement(Toggle, { label: "Enabled", sub: "Local-only changes", value: !!storage.enabled, onPress: () => { set("enabled", !storage.enabled); refreshDiscord(); } }),
       React.createElement(Toggle, { label: "Nitro / Boost Dates", sub: "72-month Nitro + 24-month boost", value: !!storage.nitroEnabled, onPress: () => { set("nitroEnabled", !storage.nitroEnabled); refreshDiscord(); } }),
@@ -232,10 +272,19 @@
       React.createElement(RN.Pressable, { onPress: apply, style: { backgroundColor: "#5865f2", padding: 13, borderRadius: 10, marginBottom: 16 } },
         React.createElement(RN.Text, { style: { color: "#fff", textAlign: "center", fontWeight: "800" } }, "Apply / Refresh")
       ),
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginBottom: 8 } }, "Public Badge Flags"),
-      ...FLAG_BADGES.map(([id, label]) => React.createElement(Toggle, { key: id, label, value: !!storage.selectedFlags?.[id], onPress: () => toggleFlag(id) })),
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Nitro / Boost / Extra Icons"),
-      ...EXTRA_BADGES.map(([id, label]) => React.createElement(Toggle, { key: id, label, value: !!storage.selectedExtras?.[id], onPress: () => toggleExtra(id) })),
+
+      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginBottom: 8 } }, "Add Public Badge Flags"),
+      ...FLAG_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "add-flag-" + id, label, value: !!storage.selectedFlags?.[id], onPress: () => toggleFlag(id) })),
+
+      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Add Nitro / Boost / Extra Icons"),
+      ...EXTRA_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "add-extra-" + id, label, value: !!storage.selectedExtras?.[id], onPress: () => toggleExtra(id) })),
+
+      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Remove Owned Public Badges"),
+      ...FLAG_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "hide-flag-" + id, label: "Hide " + label, value: !!storage.hiddenFlags?.[id], onPress: () => toggleHiddenFlag(id) })),
+
+      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Remove Owned Nitro / Extra Icons"),
+      ...EXTRA_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "hide-extra-" + id, label: "Hide " + label, value: !!storage.hiddenExtras?.[id], onPress: () => toggleHiddenExtra(id) })),
+
       React.createElement(RN.Text, { style: { color: "#aaa", marginTop: 12, lineHeight: 18 } }, "Typing is saved without refreshing every letter now. Tap Apply / Refresh after editing text. Restart Discord if badges do not refresh instantly.")
     );
   }
