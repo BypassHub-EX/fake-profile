@@ -64,19 +64,12 @@
 
   let unpatches = [];
   let myId = null;
-
-  let cacheVersion = 0;
-  let cachedUser = null;
-  let cachedUserVersion = -1;
-  let cachedProfile = null;
-  let cachedProfileVersion = -1;
+  let userCache = new WeakMap();
+  let profileCache = new WeakMap();
 
   function clearFakeCache() {
-    cacheVersion++;
-    cachedUser = null;
-    cachedProfile = null;
-    cachedUserVersion = -1;
-    cachedProfileVersion = -1;
+    userCache = new WeakMap();
+    profileCache = new WeakMap();
   }
 
   function safeStore(name) {
@@ -136,6 +129,29 @@
     return out;
   }
 
+  function setOwnValue(obj, key, value) {
+    try {
+      const oldDesc = Object.getOwnPropertyDescriptor(obj, key);
+      const enumerable = oldDesc ? !!oldDesc.enumerable : true;
+
+      if (!oldDesc || oldDesc.configurable) {
+        Object.defineProperty(obj, key, {
+          value,
+          writable: true,
+          enumerable,
+          configurable: true
+        });
+        return;
+      }
+
+      if (oldDesc.writable) {
+        obj[key] = value;
+      }
+    } catch {
+      try { obj[key] = value; } catch {}
+    }
+  }
+
   function applyFake(obj, original) {
     if (!obj || !storage.enabled) return obj;
 
@@ -143,18 +159,18 @@
     const username = storage.username || original?.username || "badgecollector";
     const flags = withBadges(original?.publicFlags ?? original?.flags ?? obj.publicFlags ?? obj.flags);
 
-    try { obj.username = username; } catch {}
-    try { obj.globalName = display; } catch {}
-    try { obj.displayName = display; } catch {}
-    try { obj.publicFlags = flags; } catch {}
-    try { obj.flags = flags; } catch {}
-    try { obj.badges = extraBadgeObjects(original?.badges ?? obj.badges); } catch {}
-    try { obj.profileBadges = extraBadgeObjects(original?.profileBadges ?? obj.profileBadges); } catch {}
+    setOwnValue(obj, "username", username);
+    setOwnValue(obj, "globalName", display);
+    setOwnValue(obj, "displayName", display);
+    setOwnValue(obj, "publicFlags", flags);
+    setOwnValue(obj, "flags", flags);
+    setOwnValue(obj, "badges", extraBadgeObjects(original?.badges ?? obj.badges));
+    setOwnValue(obj, "profileBadges", extraBadgeObjects(original?.profileBadges ?? obj.profileBadges));
 
     if (storage.nitroEnabled) {
-      try { obj.premiumType = 2; } catch {}
-      try { obj.premiumSince = oldDate(72); } catch {}
-      try { obj.premiumGuildSince = oldDate(24); } catch {}
+      setOwnValue(obj, "premiumType", 2);
+      setOwnValue(obj, "premiumSince", oldDate(72));
+      setOwnValue(obj, "premiumGuildSince", oldDate(24));
     }
 
     try { obj.hasFlag = flag => !!(flags & flag); } catch {}
@@ -162,30 +178,37 @@
     return obj;
   }
 
-  function makeFastClone(original) {
+  function cloneWithDescriptors(original) {
     try {
-      return Object.assign(Object.create(Object.getPrototypeOf(original)), original);
+      const clone = Object.create(Object.getPrototypeOf(original));
+
+      for (const key of Reflect.ownKeys(original)) {
+        try {
+          const desc = Object.getOwnPropertyDescriptor(original, key);
+          if (desc) Object.defineProperty(clone, key, desc);
+        } catch {}
+      }
+
+      return clone;
     } catch {
       try { return { ...original }; }
-      catch { return {}; }
+      catch { return original; }
     }
   }
 
   function cloneObject(original, type) {
     if (!original || !storage.enabled) return original;
 
-    if (type === "user" && cachedUser && cachedUserVersion === cacheVersion) return cachedUser;
-    if (type === "profile" && cachedProfile && cachedProfileVersion === cacheVersion) return cachedProfile;
+    const cache = type === "profile" ? profileCache : userCache;
 
-    const fake = applyFake(makeFastClone(original), original);
+    try {
+      const cached = cache.get(original);
+      if (cached) return cached;
+    } catch {}
 
-    if (type === "user") {
-      cachedUser = fake;
-      cachedUserVersion = cacheVersion;
-    } else if (type === "profile") {
-      cachedProfile = fake;
-      cachedProfileVersion = cacheVersion;
-    }
+    const fake = applyFake(cloneWithDescriptors(original), original);
+
+    try { cache.set(original, fake); } catch {}
 
     return fake;
   }
@@ -231,13 +254,8 @@
           unpatches.push(api.patcher.instead("getUser", UserStore, (a, o) => {
             const wantedId = a?.[0];
 
-            if (myId && wantedId && wantedId !== myId) {
-              return o(...a);
-            }
-
-            if (!myId && wantedId) {
-              return o(...a);
-            }
+            if (wantedId && myId && wantedId !== myId) return o(...a);
+            if (wantedId && !myId) return o(...a);
 
             return cloneUser(o(...a));
           }));
@@ -253,13 +271,8 @@
           unpatches.push(api.patcher.instead("getUserProfile", ProfileStore, (a, o) => {
             const userId = a?.[0];
 
-            if (myId && userId && userId !== myId) {
-              return o(...a);
-            }
-
-            if (!myId && userId) {
-              return o(...a);
-            }
+            if (userId && myId && userId !== myId) return o(...a);
+            if (userId && !myId) return o(...a);
 
             return cloneProfile(o(...a), userId);
           }));
@@ -271,13 +284,8 @@
           unpatches.push(api.patcher.instead("getGuildMemberProfile", ProfileStore, (a, o) => {
             const userId = a?.[0];
 
-            if (myId && userId && userId !== myId) {
-              return o(...a);
-            }
-
-            if (!myId && userId) {
-              return o(...a);
-            }
+            if (userId && myId && userId !== myId) return o(...a);
+            if (userId && !myId) return o(...a);
 
             return cloneProfile(o(...a), userId);
           }));
@@ -294,9 +302,8 @@
 
     try {
       const Dispatcher = metro.findByProps?.("dispatch", "subscribe");
-      Dispatcher?.dispatch?.({ type: "USER_UPDATE", user: { id: myId } });
-      Dispatcher?.dispatch?.({ type: "USER_PROFILE_UPDATE", userId: myId });
       Dispatcher?.dispatch?.({ type: "CURRENT_USER_UPDATE" });
+      if (myId) Dispatcher?.dispatch?.({ type: "USER_PROFILE_UPDATE", userId: myId });
     } catch {}
   }
 
@@ -375,40 +382,4 @@
       React.createElement(Field, { label: "Display name", keyName: "displayName", placeholder: "Badge Collector" }),
       React.createElement(Field, { label: "Username", keyName: "username", placeholder: "badgecollector" }),
       React.createElement(RN.Pressable, { onPress: apply, style: { backgroundColor: "#5865f2", padding: 13, borderRadius: 10, marginBottom: 16 } },
-        React.createElement(RN.Text, { style: { color: "#fff", textAlign: "center", fontWeight: "800" } }, "Apply / Refresh")
-      ),
-
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginBottom: 8 } }, "Add Public Badge Flags"),
-      ...FLAG_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "add-flag-" + id, label, value: !!storage.selectedFlags?.[id], onPress: () => toggleFlag(id) })),
-
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Add Nitro / Boost / Extra Icons"),
-      ...EXTRA_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "add-extra-" + id, label, value: !!storage.selectedExtras?.[id], onPress: () => toggleExtra(id) })),
-
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Remove Owned Public Badges"),
-      ...FLAG_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "hide-flag-" + id, label: "Hide " + label, value: !!storage.hiddenFlags?.[id], onPress: () => toggleHiddenFlag(id) })),
-
-      React.createElement(RN.Text, { style: { color: "#fff", fontSize: 16, fontWeight: "900", marginTop: 14, marginBottom: 8 } }, "Remove Owned Nitro / Extra Icons"),
-      ...EXTRA_BADGES.map(([id, label]) => React.createElement(Toggle, { key: "hide-extra-" + id, label: "Hide " + label, value: !!storage.hiddenExtras?.[id], onPress: () => toggleHiddenExtra(id) })),
-
-      React.createElement(RN.Text, { style: { color: "#aaa", marginTop: 12, lineHeight: 18 } }, "Typing is saved without refreshing every letter now. Tap Apply / Refresh after editing text. Restart Discord if badges do not refresh instantly.")
-    );
-  }
-
-  const index = {
-    onLoad() {
-      patchStores();
-      refreshDiscord();
-    },
-    onUnload() {
-      for (const unpatch of unpatches) try { unpatch?.(); } catch {}
-      unpatches = [];
-      clearFakeCache();
-      refreshDiscord();
-    },
-    settings: Settings
-  };
-
-  exports.default = index;
-  Object.defineProperty(exports, "__esModule", { value: true });
-  return exports;
-})({}, bunny.metro, bunny.metro.common, bunny.utils.lazy, bunny.api, vendetta.plugin);
+        React.createElement(RN.Text, { style: { color: "#
